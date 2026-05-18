@@ -286,3 +286,44 @@ fn test_should_add_command_to_history() {
         assert!(fish_shell.should_add_command_to_history(" asdf"));
     }
 }
+
+/// Ensures one localized non-UTF-8 PowerShell entry does not drop later ASCII executables.
+#[test]
+fn test_powershell_executables_from_gbk_output() {
+    let expected_lossy = String::from_utf8_lossy(b"\xb2\xe2\xca\xd4.exe").into_owned();
+    let gbk_entry = b"\xb2\xe2\xca\xd4.exe";
+    let ascii_entry = b"git.exe";
+    let output = CommandOutput {
+        stdout: [gbk_entry.as_slice(), b"\n", ascii_entry.as_slice()].concat(),
+        stderr: Vec::new(),
+        status: CommandExitStatus::Success,
+        exit_code: Some(0.into()),
+    };
+
+    let executables =
+        ShellType::PowerShell.executables_from_shell_command_output(Ok(output), false);
+
+    assert!(
+        executables
+            .iter()
+            .any(|name| name == expected_lossy.as_str()),
+        "expected lossy-decoded executable name to be preserved"
+    );
+
+    assert!(
+        executables.iter().any(|name| name == "git.exe"),
+        "expected ASCII executable entries after localized output to survive"
+    );
+
+    if cfg!(windows) {
+        let expected_trimmed = expected_lossy.trim_end_matches(".exe");
+        assert!(
+            executables.iter().any(|name| name == expected_trimmed),
+            "expected Windows executable suffix trimming to remain intact"
+        );
+        assert!(
+            executables.iter().any(|name| name == "git"),
+            "expected Windows suffix trimming to preserve later ASCII executables"
+        );
+    }
+}
