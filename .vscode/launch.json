@@ -39,11 +39,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug executable 'warp' with fast_dev",
+      "name": "Debug executable 'warp-oss' with fast_dev",
       "cargo": {
-        "args": ["build", "--bin=warp", "--features=fast_dev"],
+        "args": ["build", "--bin=warp-oss", "--features=fast_dev"],
         "filter": {
-          "name": "warp",
+          "name": "warp-oss",
           "kind": "bin"
         }
       },
@@ -54,11 +54,11 @@
     {
       "type": "lldb",
       "request": "launch",
-      "name": "Debug executable 'warp' with with_local_server",
+      "name": "Debug executable 'warp-oss' with with_local_server",
       "cargo": {
-        "args": ["build", "--bin=warp", "--features=with_local_server"],
+        "args": ["build", "--bin=warp-oss", "--features=with_local_server"],
         "filter": {
-          "name": "warp",
+          "name": "warp-oss",
           "kind": "bin"
         }
       },
