@@ -16,7 +16,10 @@ use crate::terminal::model::escape_sequences::ModeProvider;
 use crate::terminal::model::index::VisibleRow;
 use crate::terminal::model::iterm_image::{ITermImage, ITermImageMetadata};
 use crate::terminal::shared_session::{ai_agent::encode_agent_response_event, SharedSessionStatus};
-use crate::terminal::ssh::util::{InteractiveSshCommand, SshLoginState};
+use crate::terminal::ssh::util::{
+    output_indicates_ssh_startup_grid_cleanup, output_indicates_windows_ssh_host,
+    InteractiveSshCommand, SshLoginState,
+};
 use crate::terminal::{block_filter::BlockFilterQuery, model::ansi::Handler};
 use crate::terminal::{color, ssh, BlockPadding, ShellHost, SizeUpdate, SizeUpdateReason};
 use crate::terminal::{ShellLaunchData, ShellLaunchState};
@@ -93,6 +96,8 @@ use warpui::AppContext;
 
 /// Max size of the window title stack.
 const TITLE_STACK_MAX_DEPTH: usize = 4096;
+const WINDOWS_SSH_OUTPUT_DETECTION_MAX_BATCHES: usize = 120;
+const WINDOWS_SSH_OUTPUT_DETECTION_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
 /// The status of a conversation transcript viewer.
 /// This tracks both the loading state and the type of conversation being viewed.
@@ -603,6 +608,9 @@ pub struct TerminalModel {
     /// event is emitted either as the initial check or the confirmation check.
     notify_on_end_of_ssh_login: Option<SshLogin>,
 
+    /// SSH block whose output should be checked for Windows host prompt/banner signals.
+    detect_windows_ssh_output: Option<WindowsSshOutputDetection>,
+
     pub image_id_to_metadata: HashMap<u32, StoredImageMetadata>,
 
     /// Next ID to use for images where the ID is not explicitly specified
@@ -615,6 +623,15 @@ pub struct SshLogin {
     /// The block id of the ssh session we're tracking
     block_id: BlockId,
     notification_state: SshLoginNotificationState,
+}
+
+#[derive(Clone, Debug)]
+struct WindowsSshOutputDetection {
+    /// The SSH command block whose remote output is being inspected.
+    block_id: BlockId,
+    batches_remaining: usize,
+    /// Whether terminal-style grid cleanup was enabled before Windows host proof arrived.
+    grid_cleanup_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1165,6 +1182,7 @@ impl TerminalModel {
             tmux_control_mode_context: None,
             pending_warp_initiated_control_mode: None,
             notify_on_end_of_ssh_login: None,
+            detect_windows_ssh_output: None,
             is_receiving_hook: IsReceivingHook::No,
             image_id_to_metadata: HashMap::new(),
             // Start mid-way through the u32 range to avoid collisions
@@ -2244,6 +2262,81 @@ impl TerminalModel {
         self.pending_warp_initiated_control_mode = None;
     }
 
+    /// Starts output-based Windows host detection for the active SSH command block.
+    pub fn start_windows_ssh_output_detection(&mut self, block_id: BlockId) {
+        if let Some(block) = self.block_list_mut().mut_block_from_id(&block_id) {
+            block.set_trim_trailing_blank_rows(true);
+        }
+
+        self.detect_windows_ssh_output = Some(WindowsSshOutputDetection {
+            block_id,
+            batches_remaining: WINDOWS_SSH_OUTPUT_DETECTION_MAX_BATCHES,
+            grid_cleanup_enabled: false,
+        });
+    }
+
+    /// Uses parsed block output as a fallback for Windows-host proof.
+    fn detect_windows_ssh_output_after_byte_processing(&mut self) -> bool {
+        let Some(detection) = self.detect_windows_ssh_output.clone() else {
+            return false;
+        };
+
+        let mut height_may_have_changed = false;
+        let mut stop_detecting = false;
+        let mut detected = false;
+
+        match self.block_list_mut().mut_block_from_id(&detection.block_id) {
+            None => {
+                stop_detecting = true;
+            }
+            Some(block) if block.finished() => {
+                stop_detecting = true;
+            }
+            Some(block) => {
+                let block_output = block.output_to_string();
+                let indicates_windows_host = output_indicates_windows_ssh_host(&block_output);
+                let indicates_startup_cleanup = indicates_windows_host
+                    || output_indicates_ssh_startup_grid_cleanup(&block_output); // make pwsh faster to be trimed
+
+                if indicates_startup_cleanup {
+                    if !detection.grid_cleanup_enabled {
+                        Self::enable_windows_ssh_grid_behavior(block);
+                        height_may_have_changed = true;
+                    }
+                    detected = indicates_windows_host;
+                    stop_detecting = indicates_windows_host;
+                } else {
+                    let reached_batch_limit = detection.batches_remaining <= 1;
+                    let reached_output_limit =
+                        block_output.len() >= WINDOWS_SSH_OUTPUT_DETECTION_MAX_OUTPUT_BYTES;
+                    stop_detecting = reached_batch_limit || reached_output_limit;
+                    if stop_detecting && !detection.grid_cleanup_enabled {
+                        block.set_trim_trailing_blank_rows(false);
+                        height_may_have_changed = true;
+                    }
+                }
+            }
+        }
+
+        if stop_detecting {
+            self.detect_windows_ssh_output = None;
+        } else if let Some(detection) = &mut self.detect_windows_ssh_output {
+            detection.batches_remaining = detection.batches_remaining.saturating_sub(1);
+            if height_may_have_changed {
+                detection.grid_cleanup_enabled = true;
+            }
+        }
+
+        detected || height_may_have_changed
+    }
+
+    /// Applies the grid behavior needed for Windows SSH shells that clear the whole viewport.
+    fn enable_windows_ssh_grid_behavior(block: &mut Block) {
+        block.enable_full_grid_clear_behavior();
+        block.set_trim_trailing_blank_rows(true);
+        block.trim_leading_blank_output_history_rows();
+    }
+
     /// Informs the terminal model to start watching for ssh output that indicates the session
     /// has progressed past authentication/login. When login is complete, emit Event::DetectedEndOfSshLogin.
     pub fn start_notify_on_end_of_ssh_login(&mut self) {
@@ -3128,6 +3221,10 @@ impl ansi::Handler for TerminalModel {
             ) {
                 self.check_for_end_of_ssh_login(false);
             }
+        }
+
+        if self.detect_windows_ssh_output_after_byte_processing() {
+            self.block_list_mut().update_active_block_height();
         }
 
         let bytes = input.bytes();
