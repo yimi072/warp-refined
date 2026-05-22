@@ -2,6 +2,7 @@ use warp_cli::agent::Harness;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::Fill;
+use warp_editor::editor::NavigationKey;
 use warpui::elements::{
     Border, ChildAnchor, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
     Empty, Expanded, Flex, Hoverable, MainAxisSize, MouseStateHandle, OffsetPositioning,
@@ -21,7 +22,6 @@ use crate::editor::{
 };
 use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuVariant};
 use crate::ui_components::icons::Icon;
-use warp_editor::editor::NavigationKey;
 
 const MENU_WIDTH: f32 = 720.;
 
@@ -405,7 +405,7 @@ impl AuthSecretFtuxDropdown {
         items.push(MenuItem::Item(
             MenuItemFields::new_with_label(
                 "Skip (advanced)",
-                "Only if your key is already set in the environment (e.g. baked into the Docker image)",
+                "Only if your key is already set in the environment (e.g. injected as a Kubernetes secret)",
             )
             .with_font_size_override(FONT_SIZE)
             .with_padding_override(MENU_ITEM_VERTICAL_PADDING, MENU_HORIZONTAL_PADDING)

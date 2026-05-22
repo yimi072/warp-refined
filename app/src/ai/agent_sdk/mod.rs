@@ -7,6 +7,38 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
+use anyhow::Context;
+pub(crate) use driver::harness::{task_env_vars, validate_cli_installed, ClaudeHarness};
+pub use driver::AgentDriver;
+use driver::AgentDriverError;
+use telemetry::CliTelemetryEvent;
+use warp_cli::agent::{
+    AgentCommand, AgentProfileCommand, Harness, OutputFormat, Prompt, RunAgentArgs,
+};
+use warp_cli::api_key::ApiKeyCommand;
+use warp_cli::artifact::ArtifactCommand;
+use warp_cli::environment::{EnvironmentCommand, ImageCommand};
+use warp_cli::federate::FederateCommand;
+use warp_cli::harness_support::{HarnessSupportCommand, ReportArtifactCommand, TaskStatus};
+use warp_cli::integration::IntegrationCommand;
+use warp_cli::mcp::MCPCommand;
+use warp_cli::model::ModelCommand;
+use warp_cli::provider::ProviderCommand;
+use warp_cli::schedule::ScheduleSubcommand;
+use warp_cli::secret::SecretCommand;
+use warp_cli::share::ShareRequest;
+use warp_cli::task::{MessageCommand, TaskCommand};
+use warp_cli::{CliCommand, GlobalOptions, OZ_HARNESS_ENV};
+use warp_core::features::FeatureFlag;
+use warp_graphql::object_permissions::OwnerType;
+use warp_isolation_platform::IsolationPlatformError;
+#[cfg(not(target_family = "wasm"))]
+use warp_logging::log_file_path;
+use warp_managed_secrets::ManagedSecretManager;
+use warpui::platform::TerminationMode;
+use warpui::{AppContext, ModelSpawner, SingletonEntity};
+
 use crate::ai::agent::api::convert_conversation::{
     convert_conversation_data_to_ai_conversation, RestorationMode,
 };
@@ -15,67 +47,30 @@ use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent_sdk::driver::harness::{harness_kind, HarnessKind};
 use crate::ai::agent_sdk::driver::{AgentDriverOptions, AgentRunPrompt, Task};
 use crate::ai::agent_sdk::mcp_config::build_mcp_servers_from_specs;
+use crate::ai::ambient_agents::task::HarnessConfig;
+use crate::ai::ambient_agents::AmbientAgentTaskId;
+use crate::ai::attachment_utils::attachments_download_dir;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::refresh_aws_credentials;
+use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
 use crate::ai::llms::LLMId;
-use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
-use crate::cloud_object::model::persistence::CloudModel;
-use crate::server::server_api::ai::AIClient;
-use crate::workflows::workflow::Workflow;
-use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
-use anyhow::Context;
-use warp_cli::{
-    agent::{AgentCommand, AgentProfileCommand, OutputFormat},
-    artifact::ArtifactCommand,
-    environment::{EnvironmentCommand, ImageCommand},
-    federate::FederateCommand,
-    harness_support::{HarnessSupportCommand, ReportArtifactCommand, TaskStatus},
-    integration::IntegrationCommand,
-    mcp::MCPCommand,
-    model::ModelCommand,
-    provider::ProviderCommand,
-    schedule::ScheduleSubcommand,
-    secret::SecretCommand,
-    share::ShareRequest,
-    task::{MessageCommand, TaskCommand},
-    CliCommand, GlobalOptions,
-};
-use warp_core::features::FeatureFlag;
-use warp_isolation_platform::IsolationPlatformError;
-#[cfg(not(target_family = "wasm"))]
-use warp_logging::log_file_path;
-use warp_managed_secrets::ManagedSecretManager;
-use warpui::ModelSpawner;
-use warpui::{platform::TerminationMode, AppContext, SingletonEntity};
-
-use crate::{
-    ai::ambient_agents::{task::HarnessConfig, AmbientAgentTaskId},
-    ai::cloud_environments::CloudAmbientAgentEnvironment,
-    auth::AuthStateProvider,
-    send_telemetry_sync_from_app_ctx,
-    server::{
-        ids::{ServerId, SyncId},
-        server_api::{ai::AgentConfigSnapshot, ServerApiProvider},
-    },
-    terminal::view::ConversationRestorationInNewPaneType,
-};
-use driver::AgentDriverError;
-use warp_graphql::object_permissions::OwnerType;
-
-use crate::ai::attachment_utils::attachments_download_dir;
 use crate::ai::skills::{
     clone_repo_for_skill, resolve_skill_spec, ResolveSkillError, ResolvedSkill,
 };
-
-pub(crate) use driver::harness::{task_env_vars, validate_cli_installed, ClaudeHarness};
-pub use driver::AgentDriver;
-use telemetry::CliTelemetryEvent;
-use warp_cli::agent::{Harness, Prompt, RunAgentArgs};
-use warp_cli::OZ_HARNESS_ENV;
+use crate::auth::auth_manager::{AuthManager, AuthManagerEvent};
+use crate::auth::AuthStateProvider;
+use crate::cloud_object::model::persistence::CloudModel;
+use crate::send_telemetry_sync_from_app_ctx;
+use crate::server::ids::{ServerId, SyncId};
+use crate::server::server_api::ai::{AIClient, AgentConfigSnapshot};
+use crate::server::server_api::ServerApiProvider;
+use crate::terminal::view::ConversationRestorationInNewPaneType;
+use crate::workflows::workflow::Workflow;
 
 mod admin;
 mod agent_config;
 mod ambient;
+mod api_key;
 mod artifact;
 pub(crate) mod artifact_upload;
 mod common;
@@ -195,6 +190,12 @@ fn dispatch_command(
                 return Err(anyhow::anyhow!("invalid value 'artifact'"));
             }
             artifact::run(ctx, global_options, artifact_cmd)
+        }
+        CliCommand::ApiKey(api_key_cmd) => {
+            if !FeatureFlag::APIKeyManagement.is_enabled() {
+                return Err(anyhow::anyhow!("invalid value 'api-key'"));
+            }
+            api_key::run(ctx, global_options, api_key_cmd)
         }
     }
 }
@@ -1399,6 +1400,7 @@ fn command_requires_auth(command: &CliCommand) -> bool {
         CliCommand::Federate(_) => true,
         CliCommand::HarnessSupport(_) => true,
         CliCommand::Artifact(_) => true,
+        CliCommand::ApiKey(_) => true,
     }
 }
 
@@ -1622,6 +1624,11 @@ fn command_to_telemetry_event(command: &CliCommand) -> CliTelemetryEvent {
             ArtifactCommand::Upload(_) => CliTelemetryEvent::ArtifactUpload,
             ArtifactCommand::Get(_) => CliTelemetryEvent::ArtifactGet,
             ArtifactCommand::Download(_) => CliTelemetryEvent::ArtifactDownload,
+        },
+        CliCommand::ApiKey(api_key_cmd) => match api_key_cmd {
+            ApiKeyCommand::List(_) => CliTelemetryEvent::ApiKeyList,
+            ApiKeyCommand::Create(_) => CliTelemetryEvent::ApiKeyCreate,
+            ApiKeyCommand::Expire(_) => CliTelemetryEvent::ApiKeyExpire,
         },
     }
 }

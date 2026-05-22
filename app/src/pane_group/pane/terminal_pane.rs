@@ -1,64 +1,67 @@
 //! Implementation of terminal panes.
-#[cfg(feature = "local_fs")]
-use crate::pane_group::CodeSource;
 #[cfg(not(target_family = "wasm"))]
 use std::collections::HashMap;
 use std::sync::mpsc::SyncSender;
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
+#[cfg(not(target_family = "wasm"))]
+use session_sharing_protocol::sharer::SessionSourceType;
 use url::Url;
 use warp_cli::agent::Harness;
+use warp_core::execution_mode::AppExecutionMode;
 use warp_multi_agent_api as multi_agent_api;
-
 use warpui::{
     AppContext, EntityId, ModelHandle, SingletonEntity, ViewContext, ViewHandle, WindowId,
 };
 
-use crate::{
-    ai::{
-        active_agent_views_model::ActiveAgentViewsModel,
-        agent::{
-            conversation::{AIConversationId, ConversationStatus},
-            StartAgentExecutionMode,
-        },
-        ambient_agents::{task::HarnessConfig, AgentConfigSnapshot, AmbientAgentTaskId},
-        blocklist::{
-            agent_view::{AgentViewControllerEvent, AgentViewEntryOrigin},
-            orchestration_event_streamer::OrchestrationEventStreamer,
-            orchestration_events::{OrchestrationEventService, SendEventResult},
-            BlocklistAIHistoryModel, StartAgentRequest,
-        },
-        conversation_utils,
-        llms::LLMPreferences,
-        skills::SkillManager,
-    },
-    app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
-    features::FeatureFlag,
-    pane_group::child_agent::{
-        create_error_child_agent_conversation, ErrorChildAgentConversationRequest,
-    },
-    pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
-    persistence::{BlockCompleted, ModelEvent},
-    server::server_api::ai::{SpawnAgentRequest, UserQueryMode},
-    session_management::SessionNavigationData,
-    terminal::cli_agent_sessions::CLIAgentSessionsModel,
-    terminal::view::ambient_agent::should_disable_snapshot,
-    terminal::{
-        general_settings::GeneralSettings,
-        shared_session::{
-            join_link,
-            manager::{Manager, ManagerEvent},
-            role_change_modal::RoleChangeOpenSource,
-            SharedSessionStatus,
-        },
-        view::Event,
-        TerminalManager, TerminalView,
-    },
-    view_components::ToastFlavor,
-    workspace::{sync_inputs::SyncedInputState, PaneViewLocator, WorkspaceRegistry},
-    AIExecutionProfilesModel,
+#[cfg(not(target_family = "wasm"))]
+use super::local_harness_launch::{prepare_local_harness_child_launch, PreparedLocalHarnessLaunch};
+use super::{
+    DetachType, PaneConfiguration, PaneContent, PaneId, PaneStackEvent, PaneView, ShareableLink,
+    ShareableLinkError, TerminalPaneId,
 };
-
+use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
+use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
+use crate::ai::agent::StartAgentExecutionMode;
+use crate::ai::ambient_agents::task::{normalize_orchestrator_agent_name, HarnessConfig};
+use crate::ai::ambient_agents::{AgentConfigSnapshot, AmbientAgentTaskId};
+use crate::ai::blocklist::agent_view::{AgentViewControllerEvent, AgentViewEntryOrigin};
+use crate::ai::blocklist::orchestration_event_streamer::OrchestrationEventStreamer;
+use crate::ai::blocklist::orchestration_events::{OrchestrationEventService, SendEventResult};
+#[cfg(feature = "local_fs")]
+use crate::ai::blocklist::BlocklistAIHistoryEvent;
+use crate::ai::blocklist::{BlocklistAIHistoryModel, StartAgentRequest};
+use crate::ai::conversation_utils;
+use crate::ai::llms::LLMPreferences;
+use crate::ai::skills::SkillManager;
+use crate::app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot};
+use crate::code::buffer_location::LocalOrRemotePath;
+use crate::features::FeatureFlag;
+use crate::pane_group::child_agent::{
+    create_error_child_agent_conversation, ErrorChildAgentConversationRequest,
+};
+#[cfg(feature = "local_fs")]
+use crate::pane_group::CodeSource;
+use crate::pane_group::Event::OpenConversationHistory;
+use crate::pane_group::{self, Direction, PaneGroup};
+use crate::persistence::{BlockCompleted, ModelEvent};
+use crate::server::server_api::ai::{SpawnAgentRequest, UserQueryMode};
+#[cfg(not(target_family = "wasm"))]
+use crate::server::server_api::ServerApiProvider;
+use crate::session_management::SessionNavigationData;
+use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
+use crate::terminal::general_settings::GeneralSettings;
+use crate::terminal::shared_session::manager::{Manager, ManagerEvent};
+use crate::terminal::shared_session::role_change_modal::RoleChangeOpenSource;
+use crate::terminal::shared_session::{join_link, SharedSessionStatus};
+use crate::terminal::view::ambient_agent::should_disable_snapshot;
+use crate::terminal::view::Event;
+use crate::terminal::{TerminalManager, TerminalView};
+use crate::view_components::ToastFlavor;
+use crate::workspace::sync_inputs::SyncedInputState;
+use crate::workspace::{PaneViewLocator, WorkspaceRegistry};
+use crate::AIExecutionProfilesModel;
 // Imports below are only consumed by the non-wasm `launch_local_*_child`
 // dispatch helpers; gating them keeps the wasm build warning-clean.
 #[cfg(not(target_family = "wasm"))]
@@ -69,22 +72,6 @@ use crate::{
         HiddenChildAgentConversationRequest, HiddenChildAgentTaskContext,
     },
     terminal::shared_session::IsSharedSessionCreator,
-};
-
-#[cfg(feature = "local_fs")]
-use crate::ai::blocklist::BlocklistAIHistoryEvent;
-#[cfg(not(target_family = "wasm"))]
-use crate::server::server_api::ServerApiProvider;
-
-#[cfg(not(target_family = "wasm"))]
-use session_sharing_protocol::sharer::SessionSourceType;
-use warp_core::execution_mode::AppExecutionMode;
-
-#[cfg(not(target_family = "wasm"))]
-use super::local_harness_launch::{prepare_local_harness_child_launch, PreparedLocalHarnessLaunch};
-use super::{
-    DetachType, PaneConfiguration, PaneContent, PaneId, PaneStackEvent, PaneView, ShareableLink,
-    ShareableLinkError, TerminalPaneId,
 };
 
 pub type TerminalPaneView = PaneView<TerminalView>;
@@ -115,7 +102,7 @@ fn resolve_runtime_skills(
     let mut unresolved_references = Vec::new();
 
     for reference in skill_references {
-        let Some(skill) = skill_manager.skill_by_reference(reference) else {
+        let Some(skill) = skill_manager.active_skill_by_reference(reference, ctx) else {
             unresolved_references.push(reference.to_string());
             continue;
         };
@@ -1185,7 +1172,7 @@ fn handle_terminal_view_event(
             }
             Event::OpenFileInWarp { path, session } => {
                 ctx.emit(pane_group::Event::OpenFileInWarp {
-                    path: path.clone(),
+                    path: LocalOrRemotePath::Local(path.clone()),
                     session: session.clone(),
                 });
             }
@@ -1494,7 +1481,7 @@ fn handle_terminal_view_event(
                 open_code_review,
             } => {
                 ctx.emit(pane_group::Event::InsertCodeReviewComments {
-                    repo_path: repo_path.to_path_buf(),
+                    repo_path: repo_path.clone(),
                     comments: comments.to_owned(),
                     diff_mode: diff_mode.to_owned(),
                     open_code_review: open_code_review.clone(),
@@ -1698,7 +1685,8 @@ fn launch_local_no_harness_child(
 ) {
     let ai_client = ServerApiProvider::handle(ctx).as_ref(ctx).get_ai_client();
     let request_id = request.id;
-    let request_name = request.name.clone();
+    let agent_name = normalize_orchestrator_agent_name(&request.name);
+    let request_name = agent_name.clone().unwrap_or_default();
     let parent_conversation_id = request.parent_conversation_id;
     let parent_run_id = request.parent_run_id.clone();
     let prompt = request.prompt.clone();
@@ -1714,10 +1702,19 @@ fn launch_local_no_harness_child(
         .and_then(|view| host_terminal_shared_session_source_type(&view, ctx));
 
     let prompt_for_create = prompt.clone();
+    let agent_name_for_create = agent_name.clone();
     let _ = ctx.spawn(
         async move {
             ai_client
-                .create_agent_task(prompt_for_create, None, parent_run_id, None)
+                .create_agent_task(
+                    prompt_for_create,
+                    None,
+                    parent_run_id,
+                    Some(AgentConfigSnapshot {
+                        name: agent_name_for_create,
+                        ..Default::default()
+                    }),
+                )
                 .await
         },
         move |group, result, ctx| match result {
@@ -1841,7 +1838,8 @@ fn launch_local_harness_child(
     let startup_directory = group.startup_path_for_new_session(Some(terminal_pane_id), ctx);
     let ai_client = ServerApiProvider::handle(ctx).as_ref(ctx).get_ai_client();
     let request_id = request.id;
-    let request_name = request.name.clone();
+    let agent_name = normalize_orchestrator_agent_name(&request.name);
+    let request_name = agent_name.clone().unwrap_or_default();
     let parent_conversation_id = request.parent_conversation_id;
     let parent_run_id = request.parent_run_id.clone();
     let prompt = request.prompt.clone();
@@ -1861,6 +1859,7 @@ fn launch_local_harness_child(
         .and_then(|view| host_terminal_shared_session_source_type(&view, ctx));
 
     let model_id_for_harness_env = model_id.clone();
+    let agent_name_for_task = agent_name.clone();
     let _ = ctx.spawn(
         async move {
             prepare_local_harness_child_launch(
@@ -1868,6 +1867,7 @@ fn launch_local_harness_child(
                 harness_type,
                 model_id_for_harness_env,
                 parent_run_id,
+                agent_name_for_task,
                 shell_type,
                 startup_directory,
                 ai_client,
@@ -2034,6 +2034,9 @@ fn launch_remote_child(
         return None;
     };
 
+    let agent_name = normalize_orchestrator_agent_name(&request.name);
+    let request_name = agent_name.clone().unwrap_or_default();
+
     let new_pane_id = group.insert_ambient_agent_pane_hidden_for_child_agent(parent_pane_id, ctx);
 
     let Some(new_terminal_view) = group.terminal_view_from_pane_id(new_pane_id, ctx) else {
@@ -2046,16 +2049,14 @@ fn launch_remote_child(
     let conversation_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
         let id = history_model.start_new_child_conversation(
             terminal_view_id,
-            request.name,
+            request_name.clone(),
             request.parent_conversation_id,
             Some(orchestration_harness),
             ctx,
         );
         // Mark as remote so the parent's TaskStatusSyncModel skips status
         // reporting — the remote worker handles it.
-        if let Some(c) = history_model.conversation_mut(&id) {
-            c.mark_as_remote_child();
-        }
+        history_model.mark_conversation_as_remote_child(id, ctx);
         id
     });
 
@@ -2137,6 +2138,7 @@ fn launch_remote_child(
         prompt: request.prompt,
         mode: UserQueryMode::Normal,
         config: Some(AgentConfigSnapshot {
+            name: agent_name,
             environment_id,
             model_id: (!model_id.is_empty()).then_some(model_id),
             worker_host: (!worker_host.is_empty()).then_some(worker_host),

@@ -1,27 +1,24 @@
-use super::{
-    settings_page::{
-        render_body_item, AdditionalInfo, MatchData, PageType, SettingsPageMeta,
-        SettingsPageViewHandle, SettingsWidget,
-    },
-    LocalOnlyIconState, SettingsSection, ToggleState,
+use warp_core::features::FeatureFlag;
+use warp_core::report_if_error;
+use warp_core::settings::ToggleableSetting as _;
+use warpui::elements::{
+    Container, Element, Flex, MouseStateHandle, ParentElement, Shrinkable, Text,
 };
-use crate::{
-    appearance::Appearance,
-    auth::AuthStateProvider,
-    drive::settings::WarpDriveSettings,
-    i18n::{self, I18nKey},
+use warpui::fonts::Weight;
+use warpui::ui_components::button::ButtonVariant;
+use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
+use warpui::ui_components::switch::SwitchStateHandle;
+use warpui::{AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle};
+
+use super::settings_page::{
+    render_body_item, AdditionalInfo, MatchData, PageType, SettingsPageMeta,
+    SettingsPageViewHandle, SettingsWidget,
 };
-use warp_core::{features::FeatureFlag, report_if_error, settings::ToggleableSetting as _};
-use warpui::{
-    elements::{Container, Element, Flex, MouseStateHandle, ParentElement, Shrinkable, Text},
-    fonts::Weight,
-    ui_components::{
-        button::ButtonVariant,
-        components::{Coords, UiComponent, UiComponentStyles},
-        switch::SwitchStateHandle,
-    },
-    AppContext, Entity, SingletonEntity, TypedActionView, View, ViewContext, ViewHandle,
-};
+use super::{LocalOnlyIconState, SettingsSection, ToggleState};
+use crate::appearance::Appearance;
+use crate::auth::AuthStateProvider;
+use crate::drive::settings::WarpDriveSettings;
+use crate::i18n::{self, I18nKey};
 
 #[derive(Debug, Clone)]
 pub enum WarpDriveSettingsPageAction {

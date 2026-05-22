@@ -1,9 +1,9 @@
 use warp_completer::util::parse_current_commands_and_tokens;
 use warp_completer::{ParsedTokenData, ParsedTokensSnapshot, meta::SpannedItem};
 
-use crate::{Context, test_utils::CompletionContext};
-
 use super::*;
+use crate::Context;
+use crate::test_utils::CompletionContext;
 
 /// Builds a minimal parsed snapshot for helper-level classifier tests.
 fn mock_single_token_input(buffer_text: &str) -> ParsedTokensSnapshot {

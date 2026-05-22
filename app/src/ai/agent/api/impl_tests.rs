@@ -1,3 +1,7 @@
+use warp_core::features::FeatureFlag;
+use warp_core::HostId;
+use warp_multi_agent_api as api;
+
 use super::{
     api_keys_with_warp_credit_fallback_setting, get_supported_cli_agent_tools, get_supported_tools,
     should_use_local_openai_responses_backend,
@@ -12,6 +16,7 @@ use crate::terminal::model::session::SessionType;
 use warp_core::features::FeatureFlag;
 use warp_core::HostId;
 use warp_multi_agent_api as api;
+
 fn request_params_with_ask_user_question_enabled(ask_user_question_enabled: bool) -> RequestParams {
     let model = LLMId::from("test-model");
 

@@ -1,63 +1,55 @@
-use crate::ui_components::blended_colors;
 use core::fmt::{self, Display};
-use itertools::Itertools as _;
-use pathfinder_color::ColorU;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::{
-    about_page::AboutPageView,
-    ai_page::{AISettingsPageAction, AISettingsPageView},
-    appearance_page::AppearanceSettingsPageView,
-    billing_and_usage_page::BillingAndUsagePageView,
-    billing_and_usage_page_v2::BillingAndUsagePageV2View,
-    code_page::CodeSettingsPageView,
-    environments_page::EnvironmentsPageView,
-    features_page::FeaturesPageView,
-    keybindings::KeybindingsView,
-    main_page::MainSettingsPageView,
-    mcp_servers_page::MCPServersSettingsPageView,
-    privacy_page::PrivacyPageView,
-    referrals_page::ReferralsPageView,
-    show_blocks_view::ShowBlocksView,
-    teams_page::TeamsPageView,
-    warp_drive_page::WarpDriveSettingsPageView,
-    warpify_page::WarpifyPageView,
-    SettingsSection,
-};
-use crate::{
-    appearance::Appearance,
-    i18n::{self, I18nKey},
-    settings::CloudPreferencesSettings,
-    themes::theme::Fill,
-    ui_components::icons::Icon,
-    view_components::{Dropdown, SubmittableTextInput},
-};
+use itertools::Itertools as _;
+use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use settings::Setting;
-use warp_core::{
-    settings::SyncToCloud,
-    ui::{color::blend::Blend, theme::color::internal_colors},
+use warp_core::settings::SyncToCloud;
+use warp_core::ui::color::blend::Blend;
+use warp_core::ui::theme::color::internal_colors;
+use warpui::elements::new_scrollable::{
+    ClippedAxisConfiguration, DualAxisConfig, SingleAxisConfig,
 };
-use warpui::{
-    elements::{
-        new_scrollable::{ClippedAxisConfiguration, DualAxisConfig, SingleAxisConfig},
-        Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ConstrainedBox, Container,
-        CornerRadius, CrossAxisAlignment, Element, Empty, Expanded, Flex, Hoverable,
-        MainAxisAlignment, MainAxisSize, MouseStateHandle, NewScrollable, OffsetPositioning,
-        ParentAnchor, ParentElement, ParentOffsetBounds, Radius, SavePosition, ScrollTarget,
-        ScrollToPositionMode, Shrinkable, SizeConstraintCondition, SizeConstraintSwitch, Stack,
-        Text,
-    },
-    fonts::{Properties, Weight},
-    platform::Cursor,
-    ui_components::{
-        button::{Button, ButtonVariant},
-        components::{Coords, UiComponent, UiComponentStyles},
-    },
-    units::Pixels,
-    Action, AppContext, SingletonEntity, ViewContext, ViewHandle,
+use warpui::elements::{
+    Align, Border, ChildAnchor, ChildView, ClippedScrollStateHandle, ConstrainedBox, Container,
+    CornerRadius, CrossAxisAlignment, Element, Empty, Expanded, Flex, Hoverable, MainAxisAlignment,
+    MainAxisSize, MouseStateHandle, NewScrollable, OffsetPositioning, ParentAnchor, ParentElement,
+    ParentOffsetBounds, Radius, SavePosition, ScrollTarget, ScrollToPositionMode, Shrinkable,
+    SizeConstraintCondition, SizeConstraintSwitch, Stack, Text,
 };
+use warpui::fonts::{Properties, Weight};
+use warpui::platform::Cursor;
+use warpui::ui_components::button::{Button, ButtonVariant};
+use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
+use warpui::units::Pixels;
+use warpui::{Action, AppContext, SingletonEntity, ViewContext, ViewHandle};
+
+use super::about_page::AboutPageView;
+use super::ai_page::{AISettingsPageAction, AISettingsPageView};
+use super::appearance_page::AppearanceSettingsPageView;
+use super::billing_and_usage_dispatch::BillingAndUsageDispatchView;
+use super::code_page::CodeSettingsPageView;
+use super::environments_page::EnvironmentsPageView;
+use super::features_page::FeaturesPageView;
+use super::keybindings::KeybindingsView;
+use super::main_page::MainSettingsPageView;
+use super::mcp_servers_page::MCPServersSettingsPageView;
+use super::privacy_page::PrivacyPageView;
+use super::referrals_page::ReferralsPageView;
+use super::show_blocks_view::ShowBlocksView;
+use super::teams_page::TeamsPageView;
+use super::warp_drive_page::WarpDriveSettingsPageView;
+use super::warpify_page::WarpifyPageView;
+use super::SettingsSection;
+use crate::appearance::Appearance;
+use crate::i18n::{self, I18nKey};
+use crate::settings::CloudPreferencesSettings;
+use crate::themes::theme::Fill;
+use crate::ui_components::blended_colors;
+use crate::ui_components::icons::Icon;
+use crate::view_components::{Dropdown, SubmittableTextInput};
 
 pub const TOGGLE_BUTTON_RIGHT_PADDING: f32 = 5.;
 pub const HEADER_PADDING: f32 = 15.;
@@ -122,8 +114,7 @@ pub enum SettingsPageViewHandle {
     Referrals(ViewHandle<ReferralsPageView>),
     AI(ViewHandle<AISettingsPageView>),
     CloudEnvironments(ViewHandle<EnvironmentsPageView>),
-    BillingAndUsage(ViewHandle<BillingAndUsagePageView>),
-    BillingAndUsageV2(ViewHandle<BillingAndUsagePageV2View>),
+    BillingAndUsage(ViewHandle<BillingAndUsageDispatchView>),
     MCPServers(ViewHandle<MCPServersSettingsPageView>),
     WarpDrive(ViewHandle<WarpDriveSettingsPageView>),
 }
@@ -147,7 +138,6 @@ impl SettingsPageViewHandle {
             AI(view_handle) => ChildView::new(view_handle).finish(),
             CloudEnvironments(view_handle) => ChildView::new(view_handle).finish(),
             BillingAndUsage(view_handle) => ChildView::new(view_handle).finish(),
-            BillingAndUsageV2(view_handle) => ChildView::new(view_handle).finish(),
             MCPServers(view_handle) => ChildView::new(view_handle).finish(),
             WarpDrive(view_handle) => ChildView::new(view_handle).finish(),
         }

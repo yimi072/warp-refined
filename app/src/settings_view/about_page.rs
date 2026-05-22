@@ -1,25 +1,22 @@
-use super::{
-    settings_page::{
-        MatchData, PageType, SettingsPageEvent, SettingsPageMeta, SettingsPageViewHandle,
-        SettingsWidget,
-    },
-    SettingsSection,
-};
-use crate::{
-    appearance::Appearance, channel::ChannelState, themes::theme::ColorScheme,
-    workspace::WorkspaceAction,
-};
 use serde::Deserialize;
 use std::{path::Path, sync::OnceLock};
-use warpui::{
-    assets::asset_cache::AssetSource,
-    elements::{
-        Align, CacheOption, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, Image,
-        MainAxisAlignment, MouseStateHandle, ParentElement, Wrap,
-    },
-    ui_components::components::UiComponent,
-    AppContext, Entity, View, ViewContext, ViewHandle,
+use warpui::assets::asset_cache::AssetSource;
+use warpui::elements::{
+    Align, CacheOption, ConstrainedBox, Container, CrossAxisAlignment, Element, Flex, Image,
+    MainAxisAlignment, MouseStateHandle, ParentElement, Wrap,
 };
+use warpui::ui_components::components::UiComponent;
+use warpui::{AppContext, Entity, View, ViewContext, ViewHandle};
+
+use super::settings_page::{
+    MatchData, PageType, SettingsPageEvent, SettingsPageMeta, SettingsPageViewHandle,
+    SettingsWidget,
+};
+use super::SettingsSection;
+use crate::appearance::Appearance;
+use crate::channel::ChannelState;
+use crate::themes::theme::ColorScheme;
+use crate::workspace::WorkspaceAction;
 
 const ABOUT_PAGE_VERSION_PLACEHOLDER: &str = "v#.##.###";
 const BUNDLED_VERSION_METADATA_PATH: &str = "bundled/metadata/version.json";
