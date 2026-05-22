@@ -303,6 +303,10 @@ impl BlockGrid {
         self.grid_handler.enable_full_grid_clear_behavior();
     }
 
+    pub(in crate::terminal) fn trim_leading_blank_history_rows(&mut self) -> usize {
+        self.grid_handler.trim_leading_blank_history_rows()
+    }
+
     /// Returns a freshly-computed value of rightmost_nonempty_cell if this grid isn't
     /// finished yet. Otherwise, return a memoized value since the grid won't be mutated anymore.
     pub fn rightmost_visible_nonempty_cell(&self) -> Option<usize> {

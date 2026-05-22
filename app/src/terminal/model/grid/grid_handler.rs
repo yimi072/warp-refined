@@ -502,6 +502,23 @@ impl GridHandler {
         self.full_grid_clear_behavior = FullGridClearBehavior::Clear;
     }
 
+    pub(in crate::terminal) fn trim_leading_blank_history_rows(&mut self) -> usize {
+        let rows_to_trim = (0..self.history_size())
+            .take_while(|&row_idx| !self.row_has_visible_content_for_trimming(row_idx))
+            .count();
+
+        if rows_to_trim == 0 {
+            return 0;
+        }
+
+        self.flat_storage.truncate_rows_front(rows_to_trim);
+        if self.track_content_length {
+            self.bottommost_visible_content_row = self.bottommost_visible_content_row_backward();
+        }
+
+        rows_to_trim
+    }
+
     pub(crate) fn set_supports_emoji_presentation_selector(
         &mut self,
         supports_emoji_presentation_selector: bool,

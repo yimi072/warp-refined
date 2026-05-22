@@ -77,6 +77,49 @@ pub fn check_ssh_login_state(block_output: &str) -> SshLoginState {
     })
 }
 
+/// Returns true when recent SSH login output strongly indicates a Windows host.
+///
+/// This intentionally inspects remote output, not the `ssh ...` command text. A command can say
+/// what program to start, but it cannot prove the remote OS.
+pub fn output_indicates_windows_ssh_host(block_output: &str) -> bool {
+    lazy_static! {
+        static ref WINDOWS_BANNER_REGEX: Regex =
+            Regex::new(r"^Microsoft Windows \[[^\]]+\]$").expect("invalid regex");
+        static ref WINDOWS_DRIVE_PROMPT_REGEX: Regex =
+            Regex::new(r"^[^\r\n]*\b[A-Za-z]:[\\/][^\r\n]*>\s*$").expect("invalid regex");
+        static ref MSYS_PROMPT_REGEX: Regex =
+            Regex::new(r"\b(MINGW32|MINGW64|MSYS|MSYS2|UCRT64|CLANG64|CLANGARM64)\b")
+                .expect("invalid regex");
+    }
+
+    block_output.trim().lines().rev().take(12).any(|line| {
+        let line = line.trim_end();
+        WINDOWS_BANNER_REGEX.is_match(line)
+            || WINDOWS_DRIVE_PROMPT_REGEX.is_match(line)
+            || MSYS_PROMPT_REGEX.is_match(line)
+    })
+}
+
+/// Returns true when recent SSH startup output should enable terminal-style grid cleanup early.
+///
+/// A PowerShell banner is not proof that the remote host is Windows, because Linux/macOS can run
+/// `pwsh`; it only tells us that startup output may use full-viewport terminal behavior before a
+/// later prompt gives us enough evidence to classify the host.
+pub fn output_indicates_ssh_startup_grid_cleanup(block_output: &str) -> bool {
+    lazy_static! {
+        static ref POWERSHELL_BANNER_REGEX: Regex =
+            Regex::new(r"^PowerShell\s+\d+(?:\.\d+){1,3}(?:[-+][^\s]+)?\s*$")
+                .expect("invalid regex");
+    }
+
+    block_output
+        .trim()
+        .lines()
+        .rev()
+        .take(12)
+        .any(|line| POWERSHELL_BANNER_REGEX.is_match(line.trim_end()))
+}
+
 /// Represents the parsed components of an interactive SSH command.
 /// For some [`SshWarpifyCommand`]s, we do not support parsing
 /// a host or port In these cases, we can still parse to a valid
@@ -467,5 +510,41 @@ mod tests {
                 .host
                 == Some("localhost".to_string())
         );
+    }
+
+    #[test]
+    fn detects_windows_ssh_host_from_remote_output() {
+        assert!(output_indicates_windows_ssh_host(
+            "PowerShell 7.6.1\nPS C:\\Users\\xxxx> "
+        ));
+        assert!(output_indicates_windows_ssh_host(
+            "Microsoft Windows [版本 10.0.26100.8246]\n(c) Microsoft Corporation。\n\nxxxx@HOST C:\\Users\\xxxx>"
+        ));
+        assert!(output_indicates_windows_ssh_host("xxxx@HOST MINGW64 ~\n$ "));
+
+        assert!(!output_indicates_windows_ssh_host(
+            "PowerShell 7.6.1\nPS /home/xxxx> "
+        ));
+        assert!(!output_indicates_windows_ssh_host(
+            "Last login: Thu May 21 10:00:00 2026\nxxxx@linux:~$ "
+        ));
+        assert!(!output_indicates_windows_ssh_host(
+            "pwsh\nPowerShell 7.6.1\n/home/xxxx> "
+        ));
+    }
+
+    #[test]
+    fn detects_ssh_startup_grid_cleanup_from_powershell_banner() {
+        assert!(output_indicates_ssh_startup_grid_cleanup(
+            "PowerShell 7.6.1"
+        ));
+        assert!(output_indicates_ssh_startup_grid_cleanup(
+            "\r\n\r\nPowerShell 7.5.4\r\n"
+        ));
+
+        assert!(!output_indicates_windows_ssh_host("PowerShell 7.6.1"));
+        assert!(!output_indicates_ssh_startup_grid_cleanup(
+            "Last login: Thu May 21 10:00:00 2026\nxxxx@linux:~$ "
+        ));
     }
 }

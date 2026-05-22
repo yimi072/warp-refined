@@ -11092,6 +11092,12 @@ impl TerminalView {
                     });
                 let warpify_command = expanded_command.as_deref().unwrap_or(command.as_str());
 
+                if SshWarpifyCommand::matches(warpify_command).is_some() {
+                    self.model
+                        .lock()
+                        .start_windows_ssh_output_detection(block_id.clone());
+                }
+
                 // Check if the current running command spawns a subshell eligible for Warpification.
                 let shell_family = self.shell_family(ctx);
                 let warpify_settings = WarpifySettings::as_ref(ctx);

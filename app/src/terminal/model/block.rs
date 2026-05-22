@@ -1110,6 +1110,10 @@ impl Block {
         self.output_grid.enable_full_grid_clear_behavior();
     }
 
+    pub(in crate::terminal) fn trim_leading_blank_output_history_rows(&mut self) -> usize {
+        self.output_grid.trim_leading_blank_history_rows()
+    }
+
     pub fn set_restored_block_was_local(&mut self, was_local: bool) {
         debug_assert!(
             self.bootstrap_stage == BootstrapStage::RestoreBlocks,

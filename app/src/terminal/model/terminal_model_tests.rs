@@ -917,6 +917,35 @@ fn test_rect_selection_in_alt_screen() {
 }
 
 #[test]
+fn windows_cmd_split_banner_post_parse_detection_refreshes_active_block_height() {
+    let mut terminal = TerminalModel::mock(None, None);
+    terminal.simulate_cmd("ssh windows-host");
+    let block_id = terminal.active_block_id().clone();
+
+    terminal.start_windows_ssh_output_detection(block_id);
+    terminal.process_bytes("\r\n".repeat(12).as_str());
+    terminal.process_bytes("Microsoft Windows [Version 10.0.26100.8246");
+    terminal.process_bytes("]\r\n(c) Microsoft Corporation. All rights reserved.\r\n");
+
+    let block_list = terminal.block_list();
+    let full_output = block_list
+        .active_block()
+        .output_to_string_force_full_grid_contents();
+    let leading_blank_newlines = full_output
+        .chars()
+        .take_while(|c| matches!(c, '\n' | '\r'))
+        .count();
+
+    assert!(terminal.detect_windows_ssh_output.is_none());
+    assert!(
+        leading_blank_newlines < 6,
+        "expected the visible blank prefix to be trimmed, got {} leading blank newlines in {:?}",
+        leading_blank_newlines,
+        full_output
+    );
+}
+
+#[test]
 fn test_synchronized_output_sharing_session() {
     let mut terminal: TerminalModel = TerminalModel::mock(None, None);
 
