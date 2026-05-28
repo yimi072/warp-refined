@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::features::FeatureFlag;
+use warp_graphql::object_permissions::OwnerType;
+use warp_graphql::queries::api_keys::ApiKeyProperties as GqlApiKeyProperties;
 use warpui::elements::{
     resizable_state_handle, Align, Border, ChildView, ConstrainedBox, Container,
     CrossAxisAlignment, DragBarSide, Element, Empty, Expanded, Flex, FormattedTextElement,
@@ -26,8 +28,13 @@ use super::settings_page::{
 use super::SettingsSection;
 use crate::appearance::Appearance;
 use crate::auth::AuthStateProvider;
+use crate::editor::{
+    EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
+    TextOptions,
+};
 use crate::i18n::{self, I18nKey};
 use crate::modal::{Modal, ModalEvent, ModalViewState};
+use crate::search_bar::SearchBar;
 use crate::server::ids::ApiKeyUid;
 use crate::server::server_api::auth::AuthClient;
 use crate::settings::LanguageSettings;
@@ -52,6 +59,7 @@ const SETTINGS_SIDEBAR_WIDTH_WITH_FOOTER: f32 = 248.;
 const SETTINGS_SECTION_BORDER_WIDTH: f32 = 1.;
 const SETTINGS_PAGE_HORIZONTAL_PADDING: f32 = 56.;
 const SETTINGS_PAGE_MAX_CONTENT_WIDTH: f32 = 800.;
+const API_KEY_SEARCH_BAR_MAX_WIDTH: f32 = 640.;
 fn settings_sidebar_width_for_platform_page() -> f32 {
     if FeatureFlag::SettingsFile.is_enabled() {
         SETTINGS_SIDEBAR_WIDTH_WITH_FOOTER
@@ -102,6 +110,9 @@ pub struct PlatformPageView {
     page: PageType<Self>,
     create_api_key_modal_state: CreateApiKeyModalViewState,
     api_keys: Vec<APIKeyProperties>,
+    api_key_search_query: String,
+    api_key_search_editor: ViewHandle<EditorView>,
+    api_key_search_bar: ViewHandle<SearchBar>,
     api_key_table_column_widths: ApiKeyTableColumnWidths,
     expire_buttons: HashMap<ApiKeyUid, ViewHandle<ExpireApiKeyButton>>,
     is_loading: bool,
@@ -128,26 +139,9 @@ impl PlatformPageView {
                         me.api_keys = keys
                             .into_iter()
                             .map(|gql_key| {
-                                // Ensure the per-key expire button exists
-                                let uid = gql_key.uid.into_inner();
-                                me.ensure_expire_button_for_key(ctx, uid.clone());
-                                let scope = match gql_key.owner_type {
-                                    warp_graphql::object_permissions::OwnerType::User => {
-                                        ApiKeyScope::Personal
-                                    }
-                                    warp_graphql::object_permissions::OwnerType::Team => {
-                                        ApiKeyScope::Team
-                                    }
-                                };
-                                APIKeyProperties::new(
-                                    uid,
-                                    gql_key.name,
-                                    gql_key.key_suffix,
-                                    scope,
-                                    gql_key.created_at.utc(),
-                                    gql_key.last_used_at.map(|t| t.utc()),
-                                    gql_key.expires_at.map(|t| t.utc()),
-                                )
+                                let ui_key = APIKeyProperties::from(&gql_key);
+                                me.ensure_expire_button_for_key(ctx, ui_key.uid.clone());
+                                ui_key
                             })
                             .collect();
                         ctx.notify();
@@ -166,6 +160,28 @@ impl PlatformPageView {
         );
     }
     pub fn new(ctx: &mut ViewContext<PlatformPageView>) -> Self {
+        let api_key_search_editor = ctx.add_typed_action_view(|ctx| {
+            let appearance = Appearance::as_ref(ctx);
+            let options = SingleLineEditorOptions {
+                text: TextOptions {
+                    font_size_override: Some(appearance.ui_font_size()),
+                    font_family_override: Some(appearance.ui_font_family()),
+                    ..Default::default()
+                },
+                propagate_and_no_op_vertical_navigation_keys:
+                    PropagateAndNoOpNavigationKeys::Always,
+                ..Default::default()
+            };
+            let mut editor = EditorView::single_line(options, ctx);
+            editor.set_placeholder_text("Search API keys", ctx);
+            editor
+        });
+        ctx.subscribe_to_view(&api_key_search_editor, |me, _, event, ctx| {
+            me.handle_search_editor_event(event, ctx);
+        });
+
+        let api_key_search_bar =
+            ctx.add_typed_action_view(|_| SearchBar::new(api_key_search_editor.clone()));
         let create_api_key_body = ctx.add_typed_action_view(CreateApiKeyModal::new);
         ctx.subscribe_to_view(&create_api_key_body, |me, _, event, ctx| {
             me.handle_create_api_key_modal_event(event, ctx);
@@ -224,6 +240,9 @@ impl PlatformPageView {
                 create_api_key_modal_view,
             )),
             api_keys: vec![],
+            api_key_search_query: String::new(),
+            api_key_search_editor,
+            api_key_search_bar,
             api_key_table_column_widths: ApiKeyTableColumnWidths::default(),
             expire_buttons: HashMap::new(),
             is_loading: true,
@@ -264,29 +283,12 @@ impl PlatformPageView {
                 self.hide_create_api_key_modal(ctx);
             }
             CreateApiKeyModalEvent::Created { api_key } => {
-                // Switch modal header off for success screen
                 self.create_api_key_modal_state.set_title(
                     Some(i18n::tr(ctx, I18nKey::PlatformSaveYourKeyTitle).to_string()),
                     ctx,
                 );
-                // Append to list locally
-                // Ensure the per-key expire button exists
-                let uid = api_key.uid.clone().into_inner();
-                self.ensure_expire_button_for_key(ctx, uid.clone());
-
-                let scope = match api_key.owner_type {
-                    warp_graphql::object_permissions::OwnerType::User => ApiKeyScope::Personal,
-                    warp_graphql::object_permissions::OwnerType::Team => ApiKeyScope::Team,
-                };
-                let ui_key = APIKeyProperties::new(
-                    uid,
-                    api_key.name.clone(),
-                    api_key.key_suffix.clone(),
-                    scope,
-                    api_key.created_at.utc(),
-                    api_key.last_used_at.map(|t| t.utc()),
-                    api_key.expires_at.map(|t| t.utc()),
-                );
+                let ui_key = APIKeyProperties::from(api_key);
+                self.ensure_expire_button_for_key(ctx, ui_key.uid.clone());
                 self.api_keys.push(ui_key);
                 ctx.notify();
             }
@@ -298,6 +300,23 @@ impl PlatformPageView {
                 });
                 ctx.notify();
             }
+        }
+    }
+
+    fn handle_search_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
+        match event {
+            EditorEvent::Edited(_) => {
+                self.api_key_search_query = self.api_key_search_editor.as_ref(ctx).buffer_text(ctx);
+                ctx.notify();
+            }
+            EditorEvent::Escape => {
+                self.api_key_search_query.clear();
+                self.api_key_search_editor.update(ctx, |editor, ctx| {
+                    editor.clear_buffer_and_reset_undo_stack(ctx);
+                });
+                ctx.notify();
+            }
+            _ => {}
         }
     }
 
@@ -375,6 +394,7 @@ struct APIKeyProperties {
     name: String,
     key_suffix: String,
     scope: ApiKeyScope,
+    agent_name: Option<String>,
     created_at: DateTime<Utc>,
     last_used_at: Option<DateTime<Utc>>,
     expires_at: Option<DateTime<Utc>>,
@@ -392,23 +412,43 @@ enum ApiKeyScope {
 }
 
 impl APIKeyProperties {
-    fn new(
-        uid: ApiKeyUid,
-        name: impl Into<String>,
-        key_suffix: impl Into<String>,
-        scope: ApiKeyScope,
-        created_at: DateTime<Utc>,
-        last_used_at: Option<DateTime<Utc>>,
-        expires_at: Option<DateTime<Utc>>,
-    ) -> Self {
+    fn matches_search_query(&self, query: &str, include_agent_names: bool) -> bool {
+        let query = query.trim();
+        if query.is_empty() {
+            return true;
+        }
+
+        let needle = query.to_lowercase();
+        self.name.to_lowercase().contains(&needle)
+            || (include_agent_names
+                && self
+                    .agent_name
+                    .as_ref()
+                    .is_some_and(|agent_name| agent_name.to_lowercase().contains(&needle)))
+    }
+}
+
+impl From<&GqlApiKeyProperties> for APIKeyProperties {
+    fn from(gql_key: &GqlApiKeyProperties) -> Self {
+        let agent_name = gql_key.agent_info.as_ref().map(|agent| agent.name.clone());
+        let scope = if agent_name.is_some() {
+            ApiKeyScope::Agent
+        } else {
+            match gql_key.owner_type {
+                OwnerType::User => ApiKeyScope::Personal,
+                OwnerType::Team => ApiKeyScope::Team,
+            }
+        };
+
         Self {
-            uid,
-            name: name.into(),
-            key_suffix: key_suffix.into(),
+            uid: gql_key.uid.clone().into_inner(),
+            name: gql_key.name.clone(),
+            key_suffix: gql_key.key_suffix.clone(),
             scope,
-            created_at,
-            last_used_at,
-            expires_at,
+            agent_name,
+            created_at: gql_key.created_at.utc(),
+            last_used_at: gql_key.last_used_at.map(|t| t.utc()),
+            expires_at: gql_key.expires_at.map(|t| t.utc()),
         }
     }
 }
@@ -550,8 +590,30 @@ impl PlatformPageWidget {
                 col.add_child(self.render_zero_state(appearance, app));
             }
         } else {
-            col.add_child(self.render_api_keys_header(appearance, view, app));
-            col.add_child(self.render_api_keys_rows(appearance, view, api_keys, app));
+            col.add_child(
+                Container::new(
+                    ConstrainedBox::new(ChildView::new(&view.api_key_search_bar).finish())
+                        .with_max_width(API_KEY_SEARCH_BAR_MAX_WIDTH)
+                        .finish(),
+                )
+                .with_margin_top(16.)
+                .finish(),
+            );
+
+            let include_agent_names = FeatureFlag::NamedAgents.is_enabled();
+            let filtered_api_keys: Vec<&APIKeyProperties> = api_keys
+                .iter()
+                .filter(|key| {
+                    key.matches_search_query(&view.api_key_search_query, include_agent_names)
+                })
+                .collect();
+
+            if filtered_api_keys.is_empty() {
+                col.add_child(self.render_no_search_results(appearance));
+            } else {
+                col.add_child(self.render_api_keys_header(appearance, view, app));
+                col.add_child(self.render_api_keys_rows(appearance, view, &filtered_api_keys, app));
+            }
         }
 
         col.finish()
@@ -683,7 +745,7 @@ impl PlatformPageWidget {
         &self,
         appearance: &Appearance,
         view: &PlatformPageView,
-        api_keys: &[APIKeyProperties],
+        api_keys: &[&APIKeyProperties],
         app: &AppContext,
     ) -> Box<dyn Element> {
         let mut col = Flex::column();
@@ -883,6 +945,20 @@ impl PlatformPageWidget {
             .finish(),
         )
         .with_margin_top(80.)
+        .finish()
+    }
+
+    fn render_no_search_results(&self, appearance: &Appearance) -> Box<dyn Element> {
+        Container::new(
+            Text::new(
+                "No API keys match your search",
+                appearance.ui_font_family(),
+                CONTENT_FONT_SIZE,
+            )
+            .with_color(appearance.theme().nonactive_ui_text_color().into())
+            .finish(),
+        )
+        .with_margin_top(24.)
         .finish()
     }
 }

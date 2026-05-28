@@ -8,10 +8,9 @@
 //! from the old `(repo_path, mode)` subscription and re-subscribing with the
 //! new mode.
 
-use crate::code_review::telemetry_event::CodeReviewTelemetryEvent;
-use instant::Instant;
 use std::sync::Arc;
 
+use instant::Instant;
 use remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use warp_core::{send_telemetry_from_ctx, HostId, SessionId};
 use warp_util::remote_path::RemotePath;
@@ -22,9 +21,10 @@ use super::{
     DiffMetadata, DiffMode, DiffState, DiffStateModelEvent, DiffStats, FileDiffAndContent,
     GitDiffData, GitDiffWithBaseContent,
 };
+use crate::code_review::telemetry_event::CodeReviewTelemetryEvent;
 use crate::remote_server::diff_state_proto::{try_decode_file_delta, try_decode_snapshot};
 use crate::remote_server::proto;
-use crate::util::git::{BranchEntry, Commit, PrInfo};
+use crate::util::git::{BranchEntry, Commit};
 
 // ── Internal state ────────────────────────────────────────────────
 
@@ -524,14 +524,6 @@ impl RemoteDiffStateModel {
             (Some(upstream), Some(main)) => upstream != main,
             _ => false,
         }
-    }
-
-    pub fn pr_info(&self) -> Option<&PrInfo> {
-        self.metadata.as_ref().and_then(|m| m.pr_info.as_ref())
-    }
-
-    pub fn is_pr_info_refreshing(&self) -> bool {
-        false
     }
 
     pub fn is_git_operation_blocked(&self, _ctx: &warpui::AppContext) -> bool {

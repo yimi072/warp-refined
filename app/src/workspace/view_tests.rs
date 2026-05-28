@@ -10,7 +10,6 @@ use repo_metadata::CanonicalizedPath;
 #[cfg(feature = "local_fs")]
 use repo_metadata::RepoMetadataModel;
 use session_sharing_protocol::common::SessionId;
-use session_sharing_protocol::sharer::SessionSourceType;
 #[cfg(feature = "local_fs")]
 use tempfile::TempDir;
 use terminal::shared_session::permissions_manager::SessionPermissionsManager;
@@ -70,7 +69,9 @@ use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::history::History;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::local_tty::spawner::PtySpawner;
-use crate::terminal::shared_session::{SharedSessionScrollbackType, SharedSessionStatus};
+use crate::terminal::shared_session::{
+    SharedSessionScrollbackType, SharedSessionSource, SharedSessionStatus,
+};
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::undo_close::UndoCloseSettings;
 #[cfg(feature = "local_fs")]
@@ -305,7 +306,10 @@ fn test_tab_bar_traffic_light_space_regression_for_resource_center_overlap() {
 #[cfg(feature = "local_fs")]
 fn open_worktree_sidecar(workspace: &ViewHandle<Workspace>, app: &mut App) {
     workspace.update(app, |workspace, ctx| {
-        workspace.open_new_session_dropdown_menu(Vector2F::zero(), ctx);
+        workspace.open_new_session_dropdown_menu(
+            crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+            ctx,
+        );
 
         let worktree_index = workspace
             .new_session_dropdown_menu
@@ -403,7 +407,10 @@ fn test_worktree_sidecar_pointer_entry_does_not_select_top_repo() {
         });
 
         workspace.update(&mut app, |workspace, ctx| {
-            workspace.open_new_session_dropdown_menu(Vector2F::zero(), ctx);
+            workspace.open_new_session_dropdown_menu(
+                crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+                ctx,
+            );
 
             let worktree_index = workspace
                 .new_session_dropdown_menu
@@ -599,7 +606,7 @@ fn mock_workspace_with_shared_session(app: &mut App) -> ViewHandle<Workspace> {
         view.attempt_to_share_session(
             SharedSessionScrollbackType::All,
             None,
-            SessionSourceType::default(),
+            SharedSessionSource::user(None),
             false,
             ctx,
         );
@@ -698,6 +705,44 @@ fn active_session_state(
     }
 }
 
+#[test]
+fn restore_conversation_in_active_pane_enters_existing_live_conversation_without_loading() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let terminal_view = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .focused_session_view(ctx)
+                .expect("workspace should start with a terminal view")
+        });
+        let terminal_view_id = terminal_view.read(&app, |view, _| view.view_id());
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, false, ctx)
+            });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            assert_eq!(workspace.tab_count(), 1);
+
+            workspace.restore_conversation_in_active_pane(conversation_id, ctx);
+
+            assert_eq!(workspace.tab_count(), 1);
+        });
+
+        terminal_view.read(&app, |view, ctx| {
+            assert_eq!(view.active_conversation_id(ctx), Some(conversation_id));
+            assert_eq!(
+                view.model.lock().conversation_transcript_viewer_status(),
+                None
+            );
+        });
+    });
+}
 fn new_session_menu_label(item: &MenuItem<WorkspaceAction>) -> String {
     match item {
         MenuItem::Item(fields) => fields.label().to_string(),
@@ -1068,7 +1113,7 @@ fn setup_session_sharing_test(workspace: &ViewHandle<Workspace>, app: &mut App) 
                     terminal.attempt_to_share_session(
                         SharedSessionScrollbackType::None,
                         None,
-                        SessionSourceType::default(),
+                        SharedSessionSource::user(None),
                         false,
                         ctx,
                     );
@@ -1756,7 +1801,7 @@ fn test_stop_sharing_all_sessions_in_tab() {
                             terminal_view.attempt_to_share_session(
                                 SharedSessionScrollbackType::None,
                                 None,
-                                SessionSourceType::default(),
+                                SharedSessionSource::user(None),
                                 false,
                                 ctx,
                             );
@@ -1774,7 +1819,7 @@ fn test_stop_sharing_all_sessions_in_tab() {
                             terminal_view.attempt_to_share_session(
                                 SharedSessionScrollbackType::None,
                                 None,
-                                SessionSourceType::default(),
+                                SharedSessionSource::user(None),
                                 false,
                                 ctx,
                             );
@@ -2649,7 +2694,10 @@ fn test_pointer_opened_tab_configs_menu_does_not_select_top_item() {
         let workspace = mock_workspace(&mut app);
 
         workspace.update(&mut app, |workspace, ctx| {
-            workspace.toggle_new_session_dropdown_menu(Vector2F::zero(), ctx);
+            workspace.toggle_new_session_dropdown_menu(
+                crate::workspace::action::NewSessionMenuAnchor::Pointer(Vector2F::zero()),
+                ctx,
+            );
 
             assert!(workspace.show_new_session_dropdown_menu.is_some());
             assert_eq!(

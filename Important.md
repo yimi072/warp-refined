@@ -101,3 +101,9 @@ Windows 下如果 full debuginfo 构建突然卡在 `app/build.rs` 复制 `targe
 如果后续还想在 Windows 上尽量看变量，又不重蹈 `libwarp` 爆体积的坑，优先走“选择性符号”方案，而不是再给根包 `warp` 全量开 `debug=2`。当前仓库新增了短名 profile `wdbg`：根包继续 `line-tables-only`，避免 `libwarp` 失控；`warp_terminal`、`warp_completer`、`warp_core`、`command` 这些常调的子 crate 单独开 rich debug 并把 `opt-level` 降回 `0`。对应的 VS Code 任务是 `build_warp_oss_fastdev_windows_wdbg`，启动配置是 `Debug executable 'warp' with fast_dev (selected crate symbols)`。
 
 PowerShell 下把 `ssh ...` 优先当成 subshell / in-band 路径不是偶然分支，而是当前支持矩阵的一部分：`app/src/terminal/warpify/settings.rs` 对 `ShellFamily::PowerShell + parse_interactive_ssh_command(...)` 直接返回 `true`；同时，SSH session warpify 仍然要求 `SSHTmuxWrapper` 路径、远端 shell 只支持 `bash/zsh/fish/sh/ash`，`app/src/terminal/ssh/warpify.rs` 对远端 `ShellType::PowerShell` 直接返回 `None`，而 `ShellType::PowerShell.is_fully_supported_remotely()` 现在仍是 `false`。后续如果想把优先级改回 SSH session，先验证“本地 PowerShell -> 远端 POSIX shell”的完整成功率、tmux 依赖、以及远端 PowerShell 不支持时的退化体验，不要只看 `ssh user@host` 这一条 happy path。
+
+合并 upstream preview `v0.2026.05.27.09.22.preview` 时保留了本地 Local OpenAI/BYOK 语义：`RequiresUpgrade` 模型在存在可用 provider API key 或本地 OpenAI-compatible 后端时不应被 UI 禁用，同时也合入了上游 Bedrock credential 图标逻辑。以后再解 AI 模型菜单冲突，要同时保住这两条路径。
+
+`ShellType::rc_file_paths` 继续返回用于 shell snippet 的稳定正斜杠字符串，而不是改成随 host/target path encoding 输出反斜杠。这个选择是为了避免 Windows 构建在 SSH/Auto-Warpify 的远端 Unix snippet 里生成 `~\.zshrc` 一类路径；Windows PowerShell 侧也接受 `$HOME/.config/...`。
+
+合并新增 feature flag 时要继续同步评估 `OSS_FLAGS`。这次 `GroupedTabs` 是本地 UI 能力，不依赖 Warp 托管后端，已加入 `OSS_FLAGS`；`RemoteCodeReview` 仍涉及远程/托管能力边界，暂不加入 OSS。

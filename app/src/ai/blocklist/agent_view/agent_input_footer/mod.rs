@@ -169,6 +169,19 @@ fn plugin_chip_key(agent_prefix: &str, remote_host: &Option<String>) -> String {
     }
 }
 
+fn is_conversation_transcript_context(
+    terminal_view_id: EntityId,
+    terminal_model: &TerminalModel,
+    app: &AppContext,
+) -> bool {
+    terminal_model.is_conversation_transcript_viewer()
+        || BlocklistAIHistoryModel::as_ref(app)
+            .active_conversation(terminal_view_id)
+            .is_some_and(|conversation| {
+                conversation.is_viewing_shared_session() || conversation.is_cli_agent_transcript()
+            })
+}
+
 /// Footer control bar at the bottom of the agent input.
 ///
 /// Renders in two modes:
@@ -765,7 +778,8 @@ impl AgentInputFooter {
                     ctx.notify();
                 }
                 SessionSettingsChangedEvent::AgentToolbarChipSelectionSetting { .. }
-                | SessionSettingsChangedEvent::CLIAgentToolbarChipSelectionSetting { .. } => {
+                | SessionSettingsChangedEvent::CLIAgentToolbarChipSelectionSetting { .. }
+                | SessionSettingsChangedEvent::GithubPrChipDefaultValidation { .. } => {
                     me.update_display_chips(&prompt_for_session_settings, ctx);
                     ctx.notify();
                 }
@@ -1429,6 +1443,7 @@ impl AgentInputFooter {
         &self,
         item: &AgentToolbarItemKind,
         shared_status: &SharedSessionStatus,
+        is_conversation_transcript_context: bool,
         app: &AppContext,
     ) -> Option<Box<dyn Element>> {
         if !item.available_in().is_available_for_cli()
@@ -1441,7 +1456,8 @@ impl AgentInputFooter {
         // it doesn't make sense to offer remote-control when already
         // viewing a cloud agent's shared session.
         if matches!(item, AgentToolbarItemKind::ShareSession)
-            && self.terminal_model.lock().is_shared_ambient_agent_session()
+            && (is_conversation_transcript_context
+                || self.terminal_model.lock().is_shared_ambient_agent_session())
         {
             return None;
         }
@@ -1467,6 +1483,9 @@ impl AgentInputFooter {
                 None
             }
             AgentToolbarItemKind::ShareSession => {
+                if is_conversation_transcript_context {
+                    return None;
+                }
                 let enabled = FeatureFlag::CreatingSharedSessions.is_enabled()
                     && FeatureFlag::HOARemoteControl.is_enabled()
                     && ContextFlag::CreateSharedSession.is_enabled();
@@ -1499,7 +1518,7 @@ impl AgentInputFooter {
         // the lock before calling into helpers like `should_use_manual_mode`
         // and `render_cli_toolbar_item`, which may re-lock the same model and
         // would deadlock since the lock is non-reentrant.
-        let (background_color, shared_status) = {
+        let (background_color, shared_status, is_conversation_transcript_context) = {
             let terminal_model = self.terminal_model.lock();
             let background_color = if terminal_model.is_alt_screen_active() {
                 terminal_model
@@ -1510,7 +1529,13 @@ impl AgentInputFooter {
                 appearance.theme().surface_1().into_solid()
             };
             let shared_status = terminal_model.shared_session_status().clone();
-            (background_color, shared_status)
+            let is_conversation_transcript_context =
+                is_conversation_transcript_context(self.terminal_view_id, &terminal_model, app);
+            (
+                background_color,
+                shared_status,
+                is_conversation_transcript_context,
+            )
         };
 
         let session_settings = SessionSettings::as_ref(app);
@@ -1573,7 +1598,12 @@ impl AgentInputFooter {
         }
 
         for item in &left_items {
-            if let Some(element) = self.render_cli_toolbar_item(item, &shared_status, app) {
+            if let Some(element) = self.render_cli_toolbar_item(
+                item,
+                &shared_status,
+                is_conversation_transcript_context,
+                app,
+            ) {
                 left_buttons.add_child(element);
             }
         }
@@ -1584,7 +1614,12 @@ impl AgentInputFooter {
             .with_spacing(4.);
 
         for item in &right_items {
-            if let Some(element) = self.render_cli_toolbar_item(item, &shared_status, app) {
+            if let Some(element) = self.render_cli_toolbar_item(
+                item,
+                &shared_status,
+                is_conversation_transcript_context,
+                app,
+            ) {
                 right_buttons.add_child(element);
             }
         }
@@ -2004,6 +2039,7 @@ impl AgentInputFooter {
         item: &AgentToolbarItemKind,
         shared_status: &SharedSessionStatus,
         is_cloud_context: bool,
+        is_conversation_transcript_context: bool,
         app: &AppContext,
     ) -> Option<Box<dyn Element>> {
         let is_cloud_mode = FeatureFlag::CloudModeImageContext.is_enabled()
@@ -2066,6 +2102,9 @@ impl AgentInputFooter {
                 has_conversation.then(|| ChildView::new(&self.context_window_button).finish())
             }
             AgentToolbarItemKind::ShareSession => {
+                if is_conversation_transcript_context {
+                    return None;
+                }
                 let enabled = FeatureFlag::CreatingSharedSessions.is_enabled()
                     && FeatureFlag::HOARemoteControl.is_enabled()
                     && ContextFlag::CreateSharedSession.is_enabled();
@@ -2180,11 +2219,17 @@ impl View for AgentInputFooter {
             terminal_model.block_list().agent_view_state(),
             &terminal_model,
         );
+        let is_conversation_transcript_context =
+            is_conversation_transcript_context(self.terminal_view_id, &terminal_model, app);
 
         for item in &left_items {
-            if let Some(element) =
-                self.render_toolbar_item(item, shared_status, is_cloud_context, app)
-            {
+            if let Some(element) = self.render_toolbar_item(
+                item,
+                shared_status,
+                is_cloud_context,
+                is_conversation_transcript_context,
+                app,
+            ) {
                 left_buttons.add_child(element);
             }
         }
@@ -2205,9 +2250,13 @@ impl View for AgentInputFooter {
             );
         } else {
             for item in &right_items {
-                if let Some(element) =
-                    self.render_toolbar_item(item, shared_status, is_cloud_context, app)
-                {
+                if let Some(element) = self.render_toolbar_item(
+                    item,
+                    shared_status,
+                    is_cloud_context,
+                    is_conversation_transcript_context,
+                    app,
+                ) {
                     right_buttons.add_child(element);
                 }
             }

@@ -327,3 +327,47 @@ fn test_powershell_executables_from_gbk_output() {
         );
     }
 }
+
+/// Regression test for https://github.com/warpdotdev/warp/issues/10474.
+///
+/// `rc_file_paths` is rendered into a shell command that runs on the target
+/// (e.g. an SSH remote, or a subshell during Auto-Warpify). Keep the generated
+/// snippet paths host-independent so Windows builds do not emit Unix remote paths
+/// such as `~\.zshrc`.
+#[test]
+fn test_rc_file_paths_use_target_os_separator() {
+    for os in [TargetOS::Linux, TargetOS::MacOS] {
+        assert_eq!(
+            ShellType::Zsh.rc_file_paths(os.clone()),
+            vec!["~/.zshrc".to_string()],
+            "Zsh rc path on {os:?} should use forward slash regardless of host",
+        );
+        assert_eq!(
+            ShellType::Bash.rc_file_paths(os.clone()),
+            vec!["~/.bashrc".to_string()],
+        );
+        assert_eq!(
+            ShellType::Fish.rc_file_paths(os.clone()),
+            vec!["~/.config/fish/config.fish".to_string()],
+        );
+        assert_eq!(
+            ShellType::PowerShell.rc_file_paths(os),
+            vec![
+                "~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1".to_string(),
+                "~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1".to_string(),
+            ],
+        );
+    }
+
+    // On Windows the only Auto-Warpify-supported shell is PowerShell; Unix
+    // shells deliberately return no rc paths.
+    // PowerShell accepts forward slashes, and keeping them stable avoids host
+    // separator leakage in rendered shell snippets.
+    assert_eq!(
+        ShellType::PowerShell.rc_file_paths(TargetOS::Windows),
+        vec!["$HOME/.config/powershell/Microsoft.PowerShell_profile.ps1".to_string()],
+    );
+    assert!(ShellType::Zsh.rc_file_paths(TargetOS::Windows).is_empty());
+    assert!(ShellType::Bash.rc_file_paths(TargetOS::Windows).is_empty());
+    assert!(ShellType::Fish.rc_file_paths(TargetOS::Windows).is_empty());
+}
